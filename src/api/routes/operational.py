@@ -31,6 +31,50 @@ def operational_status() -> dict[str, Any]:
     }
 
 
+@router.get("/debug/automatos")
+def debug_automatos_live(q: str = Query(..., min_length=1)) -> dict[str, Any]:
+    """Rota temporaria de diagnostico: isola a busca ao vivo do Automatos, sem
+    passar por AssetLookup/RatContextService, pra depurar por que uma busca
+    que deveria bater nao esta encontrando nada."""
+    from src.services.automatos.live_lookup import get_snapshot_rows, find_automatos
+    from src.services.inventory.normalizer import DataNormalizer
+
+    serial = DataNormalizer.normalize_serial(q)
+    patrimonio = DataNormalizer.normalize_patrimonio(q)
+    hostname = DataNormalizer.normalize_hostname(q)
+    matricula_key = DataNormalizer.matricula_key(q)
+
+    error = None
+    rows: list[Any] = []
+    try:
+        rows = get_snapshot_rows()
+    except Exception as exc:
+        error = f"get_snapshot_rows: {type(exc).__name__}: {exc}"
+
+    match = None
+    try:
+        match = find_automatos(serial, patrimonio, hostname, matricula_key)
+    except Exception as exc:
+        error = f"{error or ''} | find_automatos: {type(exc).__name__}: {exc}"
+
+    return {
+        "query": q,
+        "normalized": {
+            "serial": serial,
+            "patrimonio": patrimonio,
+            "hostname": hostname,
+            "matricula_key": matricula_key,
+        },
+        "row_count": len(rows),
+        "error": error,
+        "match": match,
+        "sample_keys": [
+            {"computer_name_key": r.get("computer_name_key"), "serial": r.get("serial"), "top_user_key": r.get("top_user_key")}
+            for r in rows[:5]
+        ],
+    }
+
+
 @router.get("/search")
 def operational_search(
     q: str = Query(..., min_length=2, description="Matricula, serial, hostname, nome ou e-mail"),
