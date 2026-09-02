@@ -46,11 +46,22 @@ def shared_db_path() -> Path:
 
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     path = db_path or shared_db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(path)
+    except (OSError, sqlite3.OperationalError):
+        # Ambiente serverless sem banco legado empacotado: o diretorio de destino
+        # fica dentro do pacote read-only (/var/task) e nao ha nada pra copiar pro
+        # /tmp. Em vez de derrubar a requisicao, usa um banco SQLite vazio em
+        # memoria: as consultas legadas ja tratam "tabela/arquivo nao encontrado"
+        # com try/except e simplesmente retornam nada, sem quebrar a busca.
+        conn = sqlite3.connect(":memory:")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
-    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError:
+        pass
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
