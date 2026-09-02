@@ -1,6 +1,6 @@
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Query
 
 from src.core.database import connect, shared_db_path
 from src.services.prefill.operational_prefill import OperationalPrefillService
@@ -35,13 +35,10 @@ def operational_status() -> dict[str, Any]:
 def operational_search(
     q: str = Query(..., min_length=2, description="Matricula, serial, hostname, nome ou e-mail"),
 ) -> dict[str, Any]:
-    db_path = shared_db_path()
-    if not db_path.exists():
-        raise HTTPException(
-            status_code=503,
-            detail=f"Banco local nao encontrado: {db_path}",
-        )
-
+    # O banco local legado (SQLite sincronizado) e opcional: em ambiente serverless
+    # ele normalmente nao existe/nao persiste entre execucoes. As fontes vivas
+    # (Automatos ao vivo + MidiaSimples) continuam funcionando sem ele, entao a
+    # consulta nao deve falhar so por causa dessa base auxiliar estar ausente.
     service = OperationalPrefillService()
     result = service.build_for_rat(q)
     result["summary"] = service.format_summary(result)

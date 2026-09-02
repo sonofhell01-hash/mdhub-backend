@@ -1,5 +1,6 @@
 from typing import Any
 
+from src.services.midiasimples.client import MidiaSimplesSession
 from src.services.midiasimples.session_store import get_recent_validated_session
 from src.services.midiasimples.asset_senders import (
     _datatable_search,
@@ -131,20 +132,28 @@ class RatContextService:
         matricula = DataNormalizer.matricula_key(identifier)
         if not matricula:
             return None
-        stored = get_recent_validated_session("/colaboradores-tim")
-        if not stored:
-            return None
+
+        # A API publica /api/tim-users nao exige login (confirmado em teste real: responde
+        # 200 com os dados sem nenhuma sessao/cookie). Por isso consultamos direto, sem
+        # depender de uma sessao autenticada do MidiaSimples (que hoje nao temos, ja que
+        # faltam as credenciais reais de email/senha).
+        public_session = MidiaSimplesSession()
         try:
-            rows = _get_tim_users_by_registration(stored.session, matricula)
+            rows = _get_tim_users_by_registration(public_session, matricula)
         except Exception:
             rows = []
 
         if not rows:
-            try:
-                result = _datatable_search(stored.session, "/colaboradores-tim", matricula, limit=50)
-                rows = result.get("rows") or []
-            except Exception:
-                rows = []
+            # Fallback: a tela /colaboradores-tim (DataTables) essa sim exige sessao
+            # autenticada. So tenta se houver uma sessao valida guardada; se nao houver,
+            # segue so com o resultado (vazio) da API publica acima.
+            stored = get_recent_validated_session("/colaboradores-tim")
+            if stored:
+                try:
+                    result = _datatable_search(stored.session, "/colaboradores-tim", matricula, limit=50)
+                    rows = result.get("rows") or []
+                except Exception:
+                    rows = []
 
         candidates: list[dict[str, Any]] = []
         for row in rows:
@@ -172,7 +181,7 @@ class RatContextService:
 
         try:
             if person_row and person_row.get("id"):
-                detail = _get_tim_user_detail(stored.session, person_row["id"])
+                detail = _get_tim_user_detail(public_session, person_row["id"])
                 if isinstance(detail, dict):
                     person_row = {**person_row, **detail}
         except Exception:

@@ -77,7 +77,7 @@ class Document(Base):
     tipo: Mapped[str] = mapped_column(String(50), index=True, nullable=False)
     colaborador_id: Mapped[int | None] = mapped_column(ForeignKey("colaboradores.id"), index=True)
     usuario_id: Mapped[int | None] = mapped_column(ForeignKey("usuarios.id"), index=True)
-    numero_chamado: Mapped[str | None] = mapped_column(String(80), index=True)
+    numero_chamado: Mapped[str | None] = mapped_column(String(255), index=True)
     midiasimples_id: Mapped[str | None] = mapped_column(String(100), index=True)
     status: Mapped[str] = mapped_column(String(40), default="criado", index=True)
     payload: Mapped[dict[str, Any]] = mapped_column(JsonType, default=dict)

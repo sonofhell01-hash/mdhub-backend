@@ -7,6 +7,7 @@ from sqlalchemy import or_
 from src.core.database import connect
 from src.core.db_session import SessionLocal
 from src.models.core import Equipment
+from src.services.automatos.live_lookup import find_automatos as find_automatos_live
 from src.services.inventory.filter_catalog import classify_asset
 from src.services.inventory.normalizer import DataNormalizer
 
@@ -124,35 +125,12 @@ class AssetLookup:
         return _compact(_row_to_dict(row))
 
     def _find_automatos(self, conn, serial, patrimonio, hostname, matricula_key):
-        clauses = []
-        params = []
-        if serial:
-            clauses.append("serial = ?")
-            params.append(serial)
-        if patrimonio:
-            clauses.append("patrimonio = ?")
-            params.append(patrimonio)
-        if hostname:
-            clauses.append("computer_name_key = ?")
-            params.append(hostname)
-        if matricula_key:
-            clauses.append("top_user_key = ?")
-            params.append(matricula_key)
-        if not clauses:
-            return None
+        # Consulta a API do Automatos ao vivo (com cache curto em memoria) em vez
+        # da antiga tabela SQLite sincronizada, que nao persiste em serverless.
         try:
-            row = conn.execute(
-                f"""
-                SELECT * FROM automatos_snapshot
-                WHERE {' OR '.join(clauses)}
-                ORDER BY collect_date DESC, update_date DESC, id DESC
-                LIMIT 1
-                """,
-                params,
-            ).fetchone()
+            return find_automatos_live(serial, patrimonio, hostname, matricula_key)
         except Exception:
             return None
-        return _compact(_row_to_dict(row))
 
     def _find_legacy_assets(self, conn, serial, patrimonio, hostname, matricula_key):
         results = []

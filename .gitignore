@@ -8,3 +8,6 @@ data/
 *.db-wal
 *.db-shm
 .vercel
+
+# Script de migracao com credencial de banco em texto puro - nunca commitar
+migrate_core_to_postgres.py
