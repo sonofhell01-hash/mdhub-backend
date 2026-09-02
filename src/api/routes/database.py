@@ -1,7 +1,8 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, Query, Request
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from src.api.routes.admin import _require_admin_access
 from src.core.db_session import create_database_schema, get_db
 from src.models.core import User
 from src.services.technicians import list_technicians
@@ -17,13 +18,24 @@ def database_status(db: Session = Depends(get_db)):
 
 
 @router.post("/init")
-def init_database():
+def init_database(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+):
+    _require_admin_access(request, authorization, token)
     create_database_schema()
     return {"status": "ok", "message": "Schema central criado/atualizado."}
 
 
 @router.post("/seed/tecnicos")
-def seed_technicians(db: Session = Depends(get_db)):
+def seed_technicians(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    _require_admin_access(request, authorization, token)
     created = 0
     updated = 0
     for technician in list_technicians():
