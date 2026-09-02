@@ -1,0 +1,16 @@
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.13.4
+sqlalchemy==2.0.51
+alembic==1.14.0
+psycopg[binary]==3.2.13
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+requests==2.32.3
+python-multipart==0.0.20
+httpx==0.28.1
+pdfplumber==0.11.9
+
+# selenium / webdriver-manager removidos do deploy web: nao ha import eager em nenhuma rota
+# (WhatsApp via Selenium/Chrome nao roda em funcao serverless da Vercel). Reinstalar aqui se
+# o envio de WhatsApp for movido para um worker dedicado (Fase C do plano de migracao).
