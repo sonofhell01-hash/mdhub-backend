@@ -29,6 +29,11 @@ def _technician_payload_from_user(user: User) -> dict:
         "midiasimples_id": user.midiasimples_id or 0,
         "email": user.email,
         "active": user.ativo,
+        # usuario_id (FK real de `usuarios.id`) - o frontend usa isso para
+        # atribuir corretamente `documentos.usuario_id` ao criar qualquer
+        # documento pelo HUB (ver DocumentWizard.tsx). NUNCA confundir com
+        # midiasimples_id/id de colaborador retornados pela busca operacional.
+        "usuario_id": user.id,
     }
 
 
