@@ -35,10 +35,15 @@ TEAMS: tuple[tuple[str, str, str], ...] = (
 
 # (email, nome, apelido, midiasimples_id, equipe_codigo, perfil_noc)
 USERS: tuple[tuple[str, str, str, int | None, str, str], ...] = (
-    ("marcel.silva@arklok.com.br", "Marcel Diego Silva", "Marcel Silva", 308, "CEO_RJ", "admin"),
-    ("caio.freitas@arklok.com.br", "Caio Vinicius Pereira da Silva Freitas", "Caio Freitas", 332, "CEO_RJ", "admin"),
-    ("michel.delocco@arklok.com.br", "Michel Purcina Delocco", "Michel Delocco", 148, "CEO_RJ", "admin"),
-    ("marcos.reis@arklok.com.br", "Marcos Paulo da Silva Reis", "Marcos Reis", 227, "CEO_RJ", "admin"),
+    # Promovidos a `gestor_noc` a pedido explicito do usuario (checkpoint da
+    # Etapa 5) - o doc de handoff pede que essa ampliacao de escopo (ver
+    # todas as equipes) seja SEMPRE explicita, nunca implicita pro perfil
+    # `admin`. Ver README_IMPLEMENTACAO_NOC_POR_EQUIPES.md, secao "Regras de
+    # escopo".
+    ("marcel.silva@arklok.com.br", "Marcel Diego Silva", "Marcel Silva", 308, "CEO_RJ", "gestor_noc"),
+    ("caio.freitas@arklok.com.br", "Caio Vinicius Pereira da Silva Freitas", "Caio Freitas", 332, "CEO_RJ", "gestor_noc"),
+    ("michel.delocco@arklok.com.br", "Michel Purcina Delocco", "Michel Delocco", 148, "CEO_RJ", "gestor_noc"),
+    ("marcos.reis@arklok.com.br", "Marcos Paulo da Silva Reis", "Marcos Reis", 227, "CEO_RJ", "gestor_noc"),
     ("brunosilva3@unigranrio.br", "Bruno Rodrigues da Silva", "Bruno Rodrigues", None, "CEO_RJ", "tecnico"),
     ("thiago.brandelik@arklok.com.br", "Thiago Brandelik", "Thiago Brandelik", None, "PISA_SP", "tecnico"),
     ("mateus.bispo@arklok.com.br", "Mateus Santos Bispo", "Mateus Bispo", None, "PERNAMBUCO_RE", "tecnico"),
