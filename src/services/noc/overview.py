@@ -57,6 +57,23 @@ _SYNC_EVENT_BY_TIPO = {
 _STALE_AFTER = timedelta(hours=24)
 
 
+def _iso_utc(value: datetime | None) -> str | None:
+    """Serializa um datetime como ISO-8601 SEMPRE com offset UTC explicito.
+
+    As colunas de data no banco (`checked_at`, `created_at`, `enviado_em`)
+    sao gravadas como UTC "naive" (sem tzinfo). `datetime.isoformat()` num
+    valor naive nao inclui `Z`/offset, e o browser interpreta essa string
+    como HORARIO LOCAL - resultando num horario exibido ~3h adiantado para
+    quem esta em America/Sao_Paulo. Sempre anexar tzinfo=utc antes de
+    serializar evita esse bug (a UI converte para local corretamente).
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
 class NocAccessError(Exception):
     """Levantado quando o usuario pede uma equipe fora do proprio escopo."""
 
@@ -240,7 +257,7 @@ def _build_module(db: Session, module_key: str, team_user_ids: list[int]) -> dic
         # O checker do MidiaSimples e global (a fonte nao recorta por equipe);
         # deixamos isso explicito para a UI nao interpretar como "da equipe".
         "checker_scope": "global" if meta["checker_modulo"] else "n/a",
-        "last_synced_at": checker.checked_at.isoformat() if checker and checker.status == "ok" and checker.checked_at else None,
+        "last_synced_at": _iso_utc(checker.checked_at) if checker and checker.status == "ok" else None,
         "pending": pending if sync_event else None,
         "failed": failed if sync_event else None,
     }
@@ -354,8 +371,8 @@ def _document_summary(document: Document) -> dict[str, Any]:
         "usuario_id": document.usuario_id,
         "responsavel": (document.user.apelido or document.user.nome) if document.user else None,
         "sync_pendente": document.sync_pendente,
-        "created_at": document.created_at.isoformat() if document.created_at else None,
-        "enviado_em": document.enviado_em.isoformat() if document.enviado_em else None,
+        "created_at": _iso_utc(document.created_at),
+        "enviado_em": _iso_utc(document.enviado_em),
     }
 
 
