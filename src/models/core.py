@@ -21,11 +21,52 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(160), unique=True, index=True, nullable=False)
     midiasimples_id: Mapped[int | None] = mapped_column(Integer, unique=True, index=True)
     perfil: Mapped[str] = mapped_column(String(30), default="tecnico")
+    # Autorizacao interna do MD HUB para a Central NOC (tecnico | admin | gestor_noc).
+    # Deliberadamente separado de `perfil` (que hoje reflete outra coisa) para nao
+    # copiar automaticamente permissoes externas do MidiaSimples (ex.: "Integration
+    # admin") como se fossem autorizacao de equipe dentro do HUB.
+    perfil_noc: Mapped[str] = mapped_column(String(30), default="tecnico", server_default="tecnico")
     ativo: Mapped[bool] = mapped_column(Boolean, default=True)
     ultimo_login: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     documents: Mapped[list["Document"]] = relationship(back_populates="user")
+    team_links: Mapped[list["UserTeam"]] = relationship(back_populates="user")
+
+
+class Team(Base):
+    """Equipe operacional (ex.: CEO RJ, PISA SP) usada para escopar a Central NOC."""
+
+    __tablename__ = "equipes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    nome: Mapped[str] = mapped_column(String(120), unique=True, index=True, nullable=False)
+    codigo: Mapped[str] = mapped_column(String(60), unique=True, index=True, nullable=False)
+    localizacao: Mapped[str | None] = mapped_column(String(160))
+    ativa: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user_links: Mapped[list["UserTeam"]] = relationship(back_populates="team")
+
+
+class UserTeam(Base):
+    """Vinculo usuario<->equipe. Permite remanejamento, cobertura temporaria e
+    multiplas equipes para gestores, sem apagar historico (usa `ativa`)."""
+
+    __tablename__ = "usuario_equipes"
+    __table_args__ = (UniqueConstraint("usuario_id", "equipe_id", name="uq_usuario_equipes_usuario_equipe"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    usuario_id: Mapped[int] = mapped_column(ForeignKey("usuarios.id"), index=True, nullable=False)
+    equipe_id: Mapped[int] = mapped_column(ForeignKey("equipes.id"), index=True, nullable=False)
+    ativa: Mapped[bool] = mapped_column(Boolean, default=True)
+    principal: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="team_links")
+    team: Mapped["Team"] = relationship(back_populates="user_links")
 
 
 class Collaborator(Base):
