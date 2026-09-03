@@ -1,3 +1,6 @@
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from src.services.midiasimples.client import MidiaSimplesSession
@@ -14,6 +17,52 @@ from src.services.lookup.person_lookup import PersonLookup
 from src.services.inventory.normalizer import DataNormalizer
 
 
+# Cache em memoria por instancia (processo/lambda quente) para as chamadas
+# externas ao MidiaSimples usadas na busca operacional. Sem isso, toda busca
+# com resultado bate 2x na API do MidiaSimples (lista por matricula + detalhe
+# por id) de forma sequencial e sem cache, o que em serverless (Vercel em
+# iad1, API do MidiaSimples no Brasil) custava ~1.5s so de rede por busca.
+# fetched_at comeca em -inf (nao 0.0) pelo mesmo motivo do cache do Automatos
+# em live_lookup.py: time.monotonic() e relativo ao boot do container.
+_MIDIA_CACHE_TTL_SECONDS = 180
+_midia_cache_lock = threading.Lock()
+_midia_rows_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+_midia_detail_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def _cached_tim_users_by_registration(session: MidiaSimplesSession, matricula: str) -> list[dict[str, Any]]:
+    now = time.monotonic()
+    with _midia_cache_lock:
+        cached = _midia_rows_cache.get(matricula)
+        if cached and now - cached[0] < _MIDIA_CACHE_TTL_SECONDS:
+            return cached[1]
+    try:
+        rows = _get_tim_users_by_registration(session, matricula)
+    except Exception:
+        rows = []
+    with _midia_cache_lock:
+        _midia_rows_cache[matricula] = (now, rows)
+    return rows
+
+
+def _cached_tim_user_detail(session: MidiaSimplesSession, user_id: Any) -> dict[str, Any] | None:
+    key = str(user_id)
+    now = time.monotonic()
+    with _midia_cache_lock:
+        cached = _midia_detail_cache.get(key)
+        if cached and now - cached[0] < _MIDIA_CACHE_TTL_SECONDS:
+            return cached[1]
+    try:
+        detail = _get_tim_user_detail(session, user_id)
+    except Exception:
+        detail = None
+    if isinstance(detail, dict):
+        with _midia_cache_lock:
+            _midia_detail_cache[key] = (now, detail)
+        return detail
+    return None
+
+
 class RatContextService:
     """Monta o contexto operacional que futuramente sera consumido pela RAT."""
 
@@ -22,8 +71,15 @@ class RatContextService:
         self.people = PersonLookup()
 
     def build(self, query: str) -> dict[str, Any]:
-        asset = self.assets.find(query)
-        person = self.people.find(query)
+        # assets.find() e people.find() sao independentes (cada um abre sua
+        # propria sessao/conexao de banco) e antes rodavam em serie. Rodando
+        # em paralelo, o tempo da busca operacional passa a ser o do mais
+        # lento dos dois em vez da soma dos dois.
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            asset_future = pool.submit(self.assets.find, query)
+            person_future = pool.submit(self.people.find, query)
+            asset = asset_future.result()
+            person = person_future.result()
         initial_person = person.get("preferred") or {}
         person_identifier = initial_person.get("matricula_key") or initial_person.get("matricula")
         if person_identifier and not asset.get("found"):
@@ -138,10 +194,7 @@ class RatContextService:
         # depender de uma sessao autenticada do MidiaSimples (que hoje nao temos, ja que
         # faltam as credenciais reais de email/senha).
         public_session = MidiaSimplesSession()
-        try:
-            rows = _get_tim_users_by_registration(public_session, matricula)
-        except Exception:
-            rows = []
+        rows = _cached_tim_users_by_registration(public_session, matricula)
 
         if not rows:
             # Fallback: a tela /colaboradores-tim (DataTables) essa sim exige sessao
@@ -179,13 +232,10 @@ class RatContextService:
         person_row = _select_current_concession(candidates) or self._latest_row(candidates)
         term_row = self._select_term_row(candidates, preferred_serial) or person_row
 
-        try:
-            if person_row and person_row.get("id"):
-                detail = _get_tim_user_detail(public_session, person_row["id"])
-                if isinstance(detail, dict):
-                    person_row = {**person_row, **detail}
-        except Exception:
-            pass
+        if person_row and person_row.get("id"):
+            detail = _cached_tim_user_detail(public_session, person_row["id"])
+            if isinstance(detail, dict):
+                person_row = {**person_row, **detail}
 
         row = person_row or term_row or {}
         term = (term_row or row).get("term_of_concession") or {}
