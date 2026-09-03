@@ -69,11 +69,23 @@ def _compact(text: str, limit: int = 900) -> str:
 
 
 def _save_debug(prefix: str, body: str) -> str:
-    DEBUG_DIR.mkdir(parents=True, exist_ok=True)
+    # Em serverless (Vercel) o pacote implantado fica em /var/task, que e
+    # somente-leitura: tentar criar DEBUG_DIR ali derruba a requisicao com
+    # FileNotFoundError mesmo quando o envio real ao MidiaSimples ja deu
+    # certo. Tenta o diretorio configurado e cai para /tmp (unico gravavel
+    # em serverless); se nada disso funcionar, nao deixa o debug HTML
+    # derrubar o fluxo de envio - so devolve um aviso.
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    path = DEBUG_DIR / f"{stamp}_{prefix}.html"
-    path.write_text(body or "", encoding="utf-8", errors="replace")
-    return str(path)
+    filename = f"{stamp}_{prefix}.html"
+    for directory in (DEBUG_DIR, Path("/tmp/mdhub_debug_midiasimples")):
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / filename
+            path.write_text(body or "", encoding="utf-8", errors="replace")
+            return str(path)
+        except OSError:
+            continue
+    return "(debug indisponivel: nenhum diretorio gravavel encontrado)"
 
 
 def _datatable_params(limit: int = 25, search: str = "") -> str:
