@@ -14,7 +14,12 @@ from src.services.inventory.normalizer import DataNormalizer
 # (que nao sobrevive entre execucoes em ambiente serverless).
 _CACHE_TTL_SECONDS = 180
 _cache_lock = threading.Lock()
-_cache: dict[str, Any] = {"rows": [], "fetched_at": 0.0, "error": None}
+# fetched_at comeca em -inf (nao 0.0): time.monotonic() e relativo ao boot do
+# processo/container, entao num container serverless recem-criado o relogio
+# pode estar bem abaixo de 180s, e "now - 0.0 < 180" ficaria falsamente True,
+# fazendo a primeira chamada devolver o cache vazio inicial em vez de buscar
+# de verdade na API do Automatos.
+_cache: dict[str, Any] = {"rows": [], "fetched_at": float("-inf"), "error": None}
 
 
 def _fetch_and_normalize() -> list[dict[str, Any]]:
