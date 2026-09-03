@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routes import ai, auth, checkers, clients, database, documents, evidence, health, hotfix, ingest, midiasimples, operational, sync, technicians, templates, whatsapp
+from src.api.routes import ai, auth, checkers, clients, database, documents, evidence, health, hotfix, ingest, midiasimples, noc, operational, sync, technicians, templates, whatsapp
 from src.core.config import settings
 
 
@@ -36,6 +36,7 @@ app.include_router(health.router)
 app.include_router(hotfix.router)
 app.include_router(ingest.router)
 app.include_router(midiasimples.router)
+app.include_router(noc.router)
 app.include_router(operational.router)
 app.include_router(sync.router)
 app.include_router(technicians.router)
