@@ -64,6 +64,35 @@ def migrate_database(
     return {"status": "ok", "message": "Migrations aplicadas ate a revisao mais recente."}
 
 
+@router.post("/stamp")
+def stamp_database(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+    revision: str = Query(...),
+):
+    """Marca o banco como estando em `revision` sem executar nenhum DDL.
+
+    Uso pontual de bootstrap: bancos que tiveram o schema criado via
+    `POST /database/init` (create_all direto) nunca tiveram a tabela
+    `alembic_version` gravada, entao `command.upgrade` tenta rodar a
+    migration 0001 do zero e falha porque as tabelas ja existem. Este
+    endpoint carimba a revisao atual (ex.: a ultima migration que ja
+    corresponde ao schema existente) para que `POST /database/migrate`
+    passe a aplicar so as migrations realmente pendentes dali em diante.
+    """
+    _require_admin_access(request, authorization, token)
+    cfg = Config(str(_REPO_ROOT / "alembic.ini"))
+    cfg.set_main_option("script_location", str(_REPO_ROOT / "migrations"))
+    try:
+        command.stamp(cfg, revision)
+    except CommandError as exc:
+        raise HTTPException(status_code=500, detail=f"Falha ao carimbar revisao: {exc}") from exc
+    except Exception as exc:  # noqa: BLE001 - nunca vazar traceback bruto pro cliente
+        raise HTTPException(status_code=500, detail=f"Erro inesperado ao carimbar revisao: {exc}") from exc
+    return {"status": "ok", "message": f"Banco carimbado na revisao {revision}."}
+
+
 @router.post("/seed/tecnicos")
 def seed_technicians(
     request: Request,
