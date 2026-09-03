@@ -28,6 +28,54 @@ def database_status(db: Session = Depends(get_db)):
     return {"status": "ok"}
 
 
+@router.get("/stats")
+def database_stats(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Tamanho atual do banco e das maiores tabelas (somente leitura).
+
+    Usado pra acompanhar o consumo em relacao ao limite de 0.5 GB do plano
+    Free do Neon - nao altera nada, so consulta `pg_database_size` e
+    `pg_total_relation_size` (que ja inclui indices/toast de cada tabela).
+    So funciona em Postgres (usa funcoes de catalogo do Postgres).
+    """
+    _require_admin_access(request, authorization, token)
+    try:
+        database_size = db.execute(text("SELECT pg_database_size(current_database())")).scalar()
+        rows = db.execute(
+            text(
+                """
+                SELECT relname AS tabela,
+                       pg_total_relation_size(relid) AS bytes
+                FROM pg_catalog.pg_statio_user_tables
+                ORDER BY bytes DESC
+                LIMIT 15
+                """
+            )
+        ).fetchall()
+    except Exception as exc:  # noqa: BLE001 - nunca vazar traceback bruto pro cliente
+        raise HTTPException(status_code=500, detail=f"Falha ao consultar tamanho do banco: {exc}") from exc
+
+    def _fmt_mb(value: int) -> float:
+        return round(value / (1024 * 1024), 2)
+
+    limit_bytes = 500 * 1024 * 1024  # 0.5 GB do plano Free do Neon
+    return {
+        "status": "ok",
+        "database_size_bytes": database_size,
+        "database_size_mb": _fmt_mb(database_size),
+        "neon_free_limit_mb": 500,
+        "percent_of_free_limit": round((database_size / limit_bytes) * 100, 1),
+        "tables": [
+            {"tabela": row.tabela, "bytes": row.bytes, "mb": _fmt_mb(row.bytes)}
+            for row in rows
+        ],
+    }
+
+
 @router.post("/init")
 def init_database(
     request: Request,
