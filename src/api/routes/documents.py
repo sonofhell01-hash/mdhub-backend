@@ -21,6 +21,7 @@ from src.services.midiasimples.laudo_sender import LaudoSendError, send_laudo
 from src.services.midiasimples.rat_sender import MidiaSimplesSendError, send_rat
 from src.services.midiasimples.session_store import get_session, get_validated_session, invalidate_session
 from src.services.inventory.normalizer import DataNormalizer
+from src.services.noc.user_resolution import resolve_document_owner
 from src.services.sync_queue import queue_event
 
 
@@ -693,6 +694,15 @@ def _upsert_midiasimples_rat_document(db: Session, row: dict[str, Any]) -> tuple
         document.created_at = created_at
     if _rat_is_signed(row):
         document.enviado_em = document.enviado_em or created_at
+
+    # Central NOC: resolve o responsavel real (nunca a equipe de quem rodou o
+    # checker) para que a agregacao por equipe conte este RAT corretamente.
+    # So resolve quando ainda nao ha usuario_id, para nunca sobrescrever uma
+    # atribuicao ja feita/corrigida manualmente.
+    if document.usuario_id is None:
+        resolution = resolve_document_owner(db, row, fallback_name=_rat_responsible(row))
+        if resolution.usuario_id is not None:
+            document.usuario_id = resolution.usuario_id
 
     db.flush()
     return document, created

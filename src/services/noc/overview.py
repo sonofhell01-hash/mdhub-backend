@@ -14,9 +14,10 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from src.models.core import CheckerState, Document, SyncPending, Team, User, UserTeam
+from src.models.core import CheckerState, Document, MidiaSimplesSessionCache, SyncPending, Team, User, UserTeam
 
 
 # Rotulos e ordem de exibicao dos modulos operacionais da Central NOC.
@@ -35,20 +36,20 @@ NOC_MODULES: dict[str, dict[str, str | None]] = {
     "fechamento": {"label": "Fechamento", "tipo_documento": "fechamento", "checker_modulo": None},
 }
 
-# Modulos ja agregados com dados reais (Etapa 3). Os demais aparecem como
-# `not_synced` ate a Etapa 4 completar a agregacao de cada um.
-_IMPLEMENTED_MODULES = {"rat"}
-
 # Mapa de tipo de documento -> codigo de evento usado em `sync_pendente.tipo`
 # (ver src/services/sync_queue.py). Only os modulos ja sincronizados via fila
-# central tem um codigo aqui.
+# central tem um codigo aqui; os demais (rollout, fechamento, sub/headset)
+# nao passam pela fila de sync do MidiaSimples.
 _SYNC_EVENT_BY_TIPO = {
     "rat": "RAT_CREATED",
     "laudo": "LAUDO_CREATED",
     "devolucao": "DEVOLUCAO_CREATED",
     "concessao": "CONCESSAO_CREATED",
     "substituicao": "SUBSTITUICAO_CREATED",
+    "substituicao_headset": "SUBSTITUICAO_HEADSET_CREATED",
     "emprestimo": "EMPRESTIMO_CREATED",
+    "rollout": "ROLLOUT_CREATED",
+    "fechamento": "FECHAMENTO_CREATED",
 }
 
 # Checker "ok" mais velho que isso e considerado desatualizado (`stale`), nao
@@ -177,10 +178,21 @@ def _module_state_from_checker(checker: CheckerState | None) -> str:
     return "syncing"
 
 
-def _build_rat_module(db: Session, team_user_ids: list[int]) -> dict[str, Any]:
-    meta = NOC_MODULES["rat"]
+def _build_module(db: Session, module_key: str, team_user_ids: list[int]) -> dict[str, Any]:
+    """Agrega um modulo NOC a partir de `documentos`/`sync_pendente`/`checker_states`.
+
+    Todos os modulos usam a mesma tabela `documentos` (`Document.tipo`), entao
+    a mesma logica de contagem serve para os 9 modulos - a diferenca entre
+    eles e so o rotulo, o `checker_modulo` (quando a fonte e MidiaSimples) e
+    o codigo de evento de fila associado.
+
+    Um modulo so aparece como `not_synced` quando NENHUM documento desse tipo
+    existe ainda para a equipe (nunca "0" quando ha, de fato, zero
+    documentos sincronizados vs. zero porque o modulo nunca rodou).
+    """
+    meta = NOC_MODULES[module_key]
     checker = _checker_state_row(db, meta["checker_modulo"])
-    state = _module_state_from_checker(checker)
+    sync_event = _SYNC_EVENT_BY_TIPO.get(module_key)
 
     total = 0
     pending = 0
@@ -188,51 +200,49 @@ def _build_rat_module(db: Session, team_user_ids: list[int]) -> dict[str, Any]:
     if team_user_ids:
         total = (
             db.query(Document)
-            .filter(Document.tipo == "rat", Document.usuario_id.in_(team_user_ids))
+            .filter(Document.tipo == meta["tipo_documento"], Document.usuario_id.in_(team_user_ids))
             .count()
         )
-        pending = (
-            db.query(SyncPending)
-            .filter(
-                SyncPending.tipo == _SYNC_EVENT_BY_TIPO["rat"],
-                SyncPending.status == "pendente",
-                SyncPending.usuario_id.in_(team_user_ids),
+        if sync_event:
+            pending = (
+                db.query(SyncPending)
+                .filter(
+                    SyncPending.tipo == sync_event,
+                    SyncPending.status == "pendente",
+                    SyncPending.usuario_id.in_(team_user_ids),
+                )
+                .count()
             )
-            .count()
-        )
-        failed = (
-            db.query(SyncPending)
-            .filter(
-                SyncPending.tipo == _SYNC_EVENT_BY_TIPO["rat"],
-                SyncPending.status == "erro",
-                SyncPending.usuario_id.in_(team_user_ids),
+            failed = (
+                db.query(SyncPending)
+                .filter(
+                    SyncPending.tipo == sync_event,
+                    SyncPending.status == "erro",
+                    SyncPending.usuario_id.in_(team_user_ids),
+                )
+                .count()
             )
-            .count()
-        )
+
+    if checker is not None:
+        state = _module_state_from_checker(checker)
+    elif total > 0:
+        # Modulo sem checker externo (interno do HUB, ex.: rollout/fechamento)
+        # mas com documentos reais da equipe: considerar sincronizado, ja que
+        # a "fonte" e o proprio HUB.
+        state = "synced"
+    else:
+        state = "not_synced"
 
     return {
         "label": meta["label"],
-        "total": total,
+        "total": total if (checker is not None or total > 0) else None,
         "state": state,
         # O checker do MidiaSimples e global (a fonte nao recorta por equipe);
         # deixamos isso explicito para a UI nao interpretar como "da equipe".
-        "checker_scope": "global",
-        "last_synced_at": checker.checked_at.isoformat() if checker and checker.status == "ok" and checker.checked_at else None,
-        "pending": pending,
-        "failed": failed,
-    }
-
-
-def _placeholder_module(module_key: str) -> dict[str, Any]:
-    meta = NOC_MODULES[module_key]
-    return {
-        "label": meta["label"],
-        "total": None,
-        "state": "not_synced",
         "checker_scope": "global" if meta["checker_modulo"] else "n/a",
-        "last_synced_at": None,
-        "pending": None,
-        "failed": None,
+        "last_synced_at": checker.checked_at.isoformat() if checker and checker.status == "ok" and checker.checked_at else None,
+        "pending": pending if sync_event else None,
+        "failed": failed if sync_event else None,
     }
 
 
@@ -247,7 +257,7 @@ def build_overview(user: User, requested_team_id: int | None, db: Session) -> di
             "team": None,
             "scope": {"role": scope.role, "can_switch_teams": scope.can_switch_teams},
             "technicians": {"active": 0, "items": []},
-            "modules": {key: _placeholder_module(key) for key in NOC_MODULES},
+            "modules": {key: _build_module(db, key, []) for key in NOC_MODULES},
             "alerts": [],
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -256,21 +266,36 @@ def build_overview(user: User, requested_team_id: int | None, db: Session) -> di
     team_user_ids = _team_active_user_ids(db, team_id)
     technicians = _team_active_technicians(db, team_id)
 
-    modules: dict[str, Any] = {}
-    for key in NOC_MODULES:
-        if key in _IMPLEMENTED_MODULES:
-            modules[key] = _build_rat_module(db, team_user_ids)
-        else:
-            modules[key] = _placeholder_module(key)
+    modules = {key: _build_module(db, key, team_user_ids) for key in NOC_MODULES}
+    alerts = _build_module_alerts(modules)
 
     return {
         "team": {"id": team.id, "name": team.nome, "code": team.codigo} if team else None,
         "scope": {"role": scope.role, "can_switch_teams": scope.can_switch_teams},
         "technicians": {"active": len(technicians), "items": technicians},
         "modules": modules,
-        "alerts": [],
+        "alerts": alerts,
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _build_module_alerts(modules: dict[str, Any]) -> list[dict[str, Any]]:
+    """Alertas curtos derivados diretamente dos modulos ja calculados, para
+    exibir no proprio card do `/noc/overview` (o `/noc/alerts` traz a visao
+    completa, incluindo sessao MidiaSimples e documentos sem atribuicao)."""
+    alerts: list[dict[str, Any]] = []
+    for key, module in modules.items():
+        if module["state"] == "error":
+            alerts.append({"type": "checker_error", "module": key, "message": f"Checker de {module['label']} com erro."})
+        if (module["failed"] or 0) > 0:
+            alerts.append(
+                {
+                    "type": "sync_failed",
+                    "module": key,
+                    "message": f"{module['failed']} envio(s) de {module['label']} com falha na fila.",
+                }
+            )
+    return alerts
 
 
 def build_me_payload(user: User, db: Session) -> dict[str, Any]:
@@ -315,3 +340,181 @@ def build_teams_payload(user: User, db: Session) -> dict[str, Any]:
         return {"items": []}
     teams = db.query(Team).filter(Team.id.in_(scope.team_ids)).order_by(Team.nome.asc()).all()
     return {"items": [{"id": team.id, "name": team.nome, "code": team.codigo} for team in teams]}
+
+
+def _document_summary(document: Document) -> dict[str, Any]:
+    """Serializa um documento para `/noc/documents` SEM `payload`/`response_payload`
+    brutos - eles podem carregar dados pessoais e HTML cru da fonte."""
+    return {
+        "id": document.id,
+        "tipo": document.tipo,
+        "numero_chamado": document.numero_chamado,
+        "midiasimples_id": document.midiasimples_id,
+        "status": document.status,
+        "usuario_id": document.usuario_id,
+        "responsavel": (document.user.apelido or document.user.nome) if document.user else None,
+        "sync_pendente": document.sync_pendente,
+        "created_at": document.created_at.isoformat() if document.created_at else None,
+        "enviado_em": document.enviado_em.isoformat() if document.enviado_em else None,
+    }
+
+
+def build_documents_payload(
+    user: User,
+    requested_team_id: int | None,
+    db: Session,
+    *,
+    tipo: str | None = None,
+    status: str | None = None,
+    page: int = 1,
+    page_size: int = 25,
+) -> dict[str, Any]:
+    """Lista paginada de documentos da equipe autorizada do usuario.
+
+    Nunca devolve `payload`/`response_payload` brutos (ver `_document_summary`).
+    `team_id` fora do escopo autorizado sempre levanta `NocAccessError`.
+    """
+    scope = resolve_scope(user, db)
+    team_id = resolve_target_team(scope, requested_team_id)
+
+    if team_id is None:
+        return {"items": [], "page": page, "page_size": page_size, "total": 0}
+
+    team_user_ids = _team_active_user_ids(db, team_id)
+    if not team_user_ids:
+        return {"items": [], "page": page, "page_size": page_size, "total": 0}
+
+    query = db.query(Document).filter(Document.usuario_id.in_(team_user_ids))
+    if tipo:
+        query = query.filter(Document.tipo == tipo)
+    if status:
+        query = query.filter(Document.status == status)
+
+    total = query.count()
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    items = (
+        query.order_by(Document.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
+    return {
+        "items": [_document_summary(item) for item in items],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }
+
+
+def _midiasimples_session_alerts(db: Session, emails: list[str]) -> list[dict[str, Any]]:
+    if not emails:
+        return []
+    normalized = [email.strip().lower() for email in emails]
+    now = datetime.now(timezone.utc)
+    sessions = (
+        db.query(MidiaSimplesSessionCache)
+        .filter(func.lower(MidiaSimplesSessionCache.email).in_(normalized))
+        .all()
+    )
+    alerts: list[dict[str, Any]] = []
+    for session in sessions:
+        expires_at = session.expires_at
+        expired = False
+        if session.status != "ativa":
+            expired = True
+        elif expires_at is not None:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            expired = expires_at <= now
+        if expired:
+            alerts.append(
+                {
+                    "type": "midiasimples_session_expired",
+                    "email": session.email,
+                    "message": f"Sessao MidiaSimples de {session.user_name or session.email} expirada ou invalida.",
+                }
+            )
+    return alerts
+
+
+def build_alerts_payload(user: User, requested_team_id: int | None, db: Session) -> dict[str, Any]:
+    """Alertas agregados e escopados pela equipe autorizada do usuario:
+
+    - checker com erro / fonte desatualizada (globais, a fonte nao recorta
+      por equipe - mas so aparecem se a equipe tiver algum modulo dependente
+      sincronizado);
+    - fila `sync_pendente` com falha, por modulo, contada so para a equipe;
+    - sessao MidiaSimples expirada, restrita aos tecnicos da propria equipe;
+    - documentos sem atribuicao (`usuario_id is NULL`), visivel somente a
+      `admin`/`gestor_noc` (evita expor esse numero, que pode ser lido como
+      falha de outra equipe, para um tecnico comum).
+    """
+    scope = resolve_scope(user, db)
+    team_id = resolve_target_team(scope, requested_team_id)
+
+    if team_id is None:
+        return {"items": [], "generated_at": datetime.now(timezone.utc).isoformat()}
+
+    team_user_ids = _team_active_user_ids(db, team_id)
+    technicians = _team_active_technicians(db, team_id)
+
+    alerts: list[dict[str, Any]] = []
+
+    for key, meta in NOC_MODULES.items():
+        checker = _checker_state_row(db, meta["checker_modulo"])
+        if checker is None:
+            continue
+        if checker.status == "erro":
+            alerts.append(
+                {
+                    "type": "checker_error",
+                    "module": key,
+                    "message": f"Checker de {meta['label']} com erro: {checker.ultimo_erro or 'sem detalhes'}.",
+                }
+            )
+        elif _module_state_from_checker(checker) == "stale":
+            alerts.append(
+                {
+                    "type": "checker_stale",
+                    "module": key,
+                    "message": f"Checker de {meta['label']} desatualizado (mais de {int(_STALE_AFTER.total_seconds() // 3600)}h sem sincronizar).",
+                }
+            )
+
+        sync_event = _SYNC_EVENT_BY_TIPO.get(key)
+        if sync_event and team_user_ids:
+            failed = (
+                db.query(SyncPending)
+                .filter(
+                    SyncPending.tipo == sync_event,
+                    SyncPending.status == "erro",
+                    SyncPending.usuario_id.in_(team_user_ids),
+                )
+                .count()
+            )
+            if failed:
+                alerts.append(
+                    {
+                        "type": "sync_failed",
+                        "module": key,
+                        "message": f"{failed} envio(s) de {meta['label']} com falha na fila de sincronizacao.",
+                    }
+                )
+
+    team_emails = [tech["email"] for tech in technicians if tech.get("email")]
+    alerts.extend(_midiasimples_session_alerts(db, team_emails))
+
+    if scope.role in {"admin", "gestor_noc"}:
+        unassigned = db.query(Document).filter(Document.usuario_id.is_(None)).count()
+        if unassigned:
+            alerts.append(
+                {
+                    "type": "unassigned_documents",
+                    "module": None,
+                    "message": f"{unassigned} documento(s) sem responsavel identificado (grupo Sem equipe).",
+                }
+            )
+
+    return {"items": alerts, "generated_at": datetime.now(timezone.utc).isoformat()}
