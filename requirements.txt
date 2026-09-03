@@ -10,6 +10,7 @@ requests==2.32.3
 python-multipart==0.0.20
 httpx==0.28.1
 pdfplumber==0.11.9
+tzdata==2025.2
 
 # selenium / webdriver-manager removidos do deploy web: nao ha import eager em nenhuma rota
 # (WhatsApp via Selenium/Chrome nao roda em funcao serverless da Vercel). Reinstalar aqui se

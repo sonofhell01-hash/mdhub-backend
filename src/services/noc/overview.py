@@ -13,11 +13,30 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from src.models.core import CheckerState, Document, MidiaSimplesSessionCache, SyncPending, Team, User, UserTeam
+
+_SAO_PAULO_TZ = ZoneInfo("America/Sao_Paulo")
+
+
+def _today_utc_range() -> tuple[datetime, datetime]:
+    """Janela [inicio, fim) do "hoje" em America/Sao_Paulo, convertida para
+    UTC naive (mesmo formato de `documentos.created_at` no banco).
+
+    A Central NOC mostra o total de HOJE por equipe como numero principal
+    dos cards (pedido explicito do usuario - um total acumulado desde
+    sempre nao serve pra acompanhar operacao em tempo real).
+    """
+    now_local = datetime.now(_SAO_PAULO_TZ)
+    start_local = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_local = start_local + timedelta(days=1)
+    start_utc = start_local.astimezone(timezone.utc).replace(tzinfo=None)
+    end_utc = end_local.astimezone(timezone.utc).replace(tzinfo=None)
+    return start_utc, end_utc
 
 
 # Rotulos e ordem de exibicao dos modulos operacionais da Central NOC.
@@ -211,15 +230,19 @@ def _build_module(db: Session, module_key: str, team_user_ids: list[int]) -> dic
     checker = _checker_state_row(db, meta["checker_modulo"])
     sync_event = _SYNC_EVENT_BY_TIPO.get(module_key)
 
-    total = 0
+    total_all_time = 0
+    total_today = 0
     pending = 0
     failed = 0
     if team_user_ids:
-        total = (
-            db.query(Document)
-            .filter(Document.tipo == meta["tipo_documento"], Document.usuario_id.in_(team_user_ids))
-            .count()
+        base_query = db.query(Document).filter(
+            Document.tipo == meta["tipo_documento"], Document.usuario_id.in_(team_user_ids)
         )
+        total_all_time = base_query.count()
+        today_start, today_end = _today_utc_range()
+        total_today = base_query.filter(
+            Document.created_at >= today_start, Document.created_at < today_end
+        ).count()
         if sync_event:
             pending = (
                 db.query(SyncPending)
@@ -242,7 +265,7 @@ def _build_module(db: Session, module_key: str, team_user_ids: list[int]) -> dic
 
     if checker is not None:
         state = _module_state_from_checker(checker)
-    elif total > 0:
+    elif total_all_time > 0:
         # Modulo sem checker externo (interno do HUB, ex.: rollout/fechamento)
         # mas com documentos reais da equipe: considerar sincronizado, ja que
         # a "fonte" e o proprio HUB.
@@ -250,9 +273,17 @@ def _build_module(db: Session, module_key: str, team_user_ids: list[int]) -> dic
     else:
         state = "not_synced"
 
+    # `total` = HOJE (America/Sao_Paulo) - numero principal do card, pedido
+    # explicito do usuario pra acompanhar operacao em tempo real (um total
+    # acumulado desde sempre nao serve pra isso). So fica `None` quando o
+    # modulo nunca teve NENHUM documento da equipe (`not_synced` de verdade);
+    # havendo historico mas nada hoje, mostra "0" mesmo (equipe ativa, dia
+    # parado). `total_all_time` fica disponivel como numero secundario.
+    has_any_data = checker is not None or total_all_time > 0
     return {
         "label": meta["label"],
-        "total": total if (checker is not None or total > 0) else None,
+        "total": total_today if has_any_data else None,
+        "total_all_time": total_all_time if has_any_data else None,
         "state": state,
         # O checker do MidiaSimples e global (a fonte nao recorta por equipe);
         # deixamos isso explicito para a UI nao interpretar como "da equipe".
